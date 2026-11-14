@@ -3,8 +3,8 @@
 Compares market and true probability, decides whether to trade, sizes the stake,
 and places a limit order.
 
-Math (edge): edge = p_true - yes_price. The gap between what you believe and what you pay.
-    Example: p_true 0.75, yes_price 0.60 -> edge 0.15 (15 points).
+Math (edge): edge = p_true - p_market. This is the gap in probability points.
+    Example: p_true 0.75, p_market 0.60 -> edge 0.15 (15 points).
 
 Math (Kelly criterion for buying a binary share):
     A Yes share costs price c (0..1). If the event happens it pays 1, so the
@@ -28,7 +28,7 @@ from typing import Any, Protocol
 from .market import MarketProbabilityModule, MarketSnapshot, available_depth
 from .oracle import TrueProbability, TrueProbabilityEngine
 
-log = logging.getLogger("odin.execution")
+log = logging.getLogger("munin.execution")
 
 
 def kelly_fraction(true_p: float, price: float) -> float:
@@ -85,9 +85,6 @@ class ExecutionController:
         self.truth = truth
         self.orders = orders
         self.config = config or TradeConfig()
-        # shortcut: in memory only, so a restart forgets past orders and a market is never
-        # bought twice even after it fills; replace with the venue's open positions before going live.
-        self.ordered: set[str] = set()
 
     def decide(self, snapshot: MarketSnapshot, true: TrueProbability, bankroll: float) -> Decision:
         """Pure decision logic. No network calls, so it is easy to test."""
@@ -95,9 +92,7 @@ class ExecutionController:
             return Decision("NO_TRADE", true.reason)
 
         cfg = self.config
-        # Edge is measured against the price paid, not the normalised probability:
-        # the venue's margin is a real cost, so it must not count as edge.
-        edge = true.probability - snapshot.yes_price
+        edge = true.probability - snapshot.market_probability
         if edge < cfg.edge_threshold:
             return Decision("NO_TRADE", f"edge {edge:.3f} below threshold {cfg.edge_threshold:.3f}", edge=edge)
 
@@ -114,22 +109,11 @@ class ExecutionController:
                         stake_amount=amount, limit_price=limit_price)
 
     def run_once(self, market_id: str, bankroll: float) -> Decision:
-        decision = self._evaluate(market_id, bankroll)
-        if decision.action == "NO_TRADE":
-            log.info("%s: no trade (%s)", market_id, decision.reason)
-        return decision
-
-    def _evaluate(self, market_id: str, bankroll: float) -> Decision:
-        if market_id in self.ordered:
-            return Decision("NO_TRADE", "already ordered this market")
-        try:
-            snapshot = self.market.snapshot(market_id)
-            true = self.truth.estimate(market_id)
-        except Exception as err:  # one bad quote or failing source must not stop the other markets
-            return Decision("NO_TRADE", f"data error: {err}")
-
+        snapshot = self.market.snapshot(market_id)
+        true = self.truth.estimate(market_id)
         decision = self.decide(snapshot, true, bankroll)
         if decision.action == "NO_TRADE":
+            log.info("%s: no trade (%s)", market_id, decision.reason)
             return decision
 
         size = decision.stake_amount / decision.limit_price  # shares = dollars / price
@@ -138,7 +122,6 @@ class ExecutionController:
             return Decision("NO_TRADE", f"depth {viable:.1f} < needed {size:.1f} shares", edge=decision.edge)
 
         self.send_order(market_id, decision.limit_price, size)
-        self.ordered.add(market_id)
         return decision
 
     def send_order(self, market_id: str, price: float, size: float) -> dict[str, Any] | None:

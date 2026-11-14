@@ -68,15 +68,17 @@ class TrueProbabilityEngine:
             reading = oracle.read(market_id)  # a source may be down; None means no data
             if reading is None:
                 continue
-            if not (0.0 <= reading.probability <= 1.0) or not math.isfinite(reading.weight) or reading.weight < 0:
+            if not (0.0 <= reading.probability <= 1.0) or reading.weight < 0:
                 raise ValueError(f"oracle {oracle.name} gave an invalid reading: {reading}")
-            if reading.weight > 0:  # a zero-weight source has no say, so it must not count toward the quorum
-                readings.append(reading)
+            readings.append(reading)
 
         if len(readings) < self.min_sources:
-            return TrueProbability(None, math.nan, tuple(readings), f"NO TRADE: {len(readings)} weighted source(s), need {self.min_sources}")
+            return TrueProbability(None, math.nan, tuple(readings), f"NO TRADE: {len(readings)} source(s), need {self.min_sources}")
 
         total_weight = sum(r.weight for r in readings)
+        if total_weight == 0:
+            return TrueProbability(None, math.nan, tuple(readings), "NO TRADE: all weights are zero")
+
         p_true = sum(r.weight * r.probability for r in readings) / total_weight
         variance = sum(r.weight * (r.probability - p_true) ** 2 for r in readings) / total_weight
         std_dev = math.sqrt(variance)

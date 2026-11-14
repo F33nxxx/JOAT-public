@@ -1,7 +1,7 @@
 """Demo loop: fetch market price -> true probability -> compare edge -> stake -> execute.
 
 Runs in dry-run mode with fake data. Replace the stubs with real transports and oracles.
-Run from the repo root:  python -m odin.main
+Run from the repo root:  python -m munin.main
 """
 
 from __future__ import annotations
